@@ -16,6 +16,7 @@ from unidecode import unidecode
 import numpy as np
 import gc
 from pathlib import Path
+from typing import Dict  # Añadido para evitar fallos de tipo con Dict
 
 # ======================================
 # Configuración general
@@ -28,6 +29,59 @@ st.set_page_config(
 )
 
 SIMILARITY_THRESHOLD_TITULOS = 0.93
+
+# Plantilla de orden y estructura de conteos para la pestaña adicional
+TEMPLATE_ROWS = [
+    ("Chery 01-18 | |19-31", "Codificación Audiovisuales", "ANCHERY"),
+    ("Chery 01-18 | |19-31", "Codificación Impresos", "ANCHERY"),
+    ("Chery 01-18 | |19-31", "Notas Audiovisuales", "ANCHERY"),
+    ("Chery 01-18 | |19-31", "Notas Impresos", "ANCHERY"),
+    
+    ("Chery - Changan, Competencias", "Codificación Audiovisuales", "ANCHERY"),
+    ("Chery - Changan, Competencias", "Codificación Impresos", "ANCHERY"),
+    ("Chery - Changan, Competencias", "Notas Audiovisuales", "ANCHERY"),
+    ("Chery - Changan, Competencias", "Notas Impresos", "ANCHERY"),
+    
+    ("Comfenalco Valle", "Codificación Audiovisuales", "ACOMFEVALLE"),
+    ("Comfenalco Valle", "Codificación Impresos", "ACOMFEVALLE"),
+    ("Comfenalco Valle", "Notas Audiovisuales", "ACOMFEVALLE"),
+    ("Comfenalco Valle", "Notas Impresos", "ACOMFEVALLE"),
+    
+    ("Federación Nacional de Avicultores de Colombia", "Codificación Audiovisuales", "ANFENAVI"),
+    ("Federación Nacional de Avicultores de Colombia", "Codificación Impresos", "ANFENAVI"),
+    ("Federación Nacional de Avicultores de Colombia", "Notas Audiovisuales", "ANFENAVI"),
+    ("Federación Nacional de Avicultores de Colombia", "Notas Impresos", "ANFENAVI"),
+    
+    ("Fundación Santa Fe de Bogotá", "Codificación Audiovisuales", "FSANTAFE_AN"),
+    ("Fundación Santa Fe de Bogotá", "Codificación Impresos", "FSANTAFE_AN"),
+    ("Fundación Santa Fe de Bogotá", "Notas Audiovisuales", "FSANTAFE_AN"),
+    ("Fundación Santa Fe de Bogotá", "Notas Impresos", "FSANTAFE_AN"),
+    
+    ("Nissan", "Codificación Audiovisuales", "ANNISSAN"),
+    ("Nissan", "Codificación Impresos", "ANNISSAN"),
+    ("Nissan", "Notas Audiovisuales", "ANNISSAN"),
+    ("Nissan", "Notas Impresos", "ANNISSAN"),
+    
+    ("Nissan, Competencia", "Codificación Audiovisuales", "ANNISSAN"),
+    ("Nissan, Competencia", "Codificación Impresos", "ANNISSAN"),
+    ("Nissan, Competencia", "Notas Audiovisuales", "ANNISSAN"),
+    ("Nissan, Competencia", "Notas Impresos", "ANNISSAN"),
+    
+    ("Tigo", "Codificación Audiovisuales", "TIGOAN"),
+    ("Tigo", "Codificación Impresos", "TIGOAN"),
+    ("Tigo", "Notas Audiovisuales", "TIGOAN"),
+    ("Tigo", "Notas Impresos", "TIGOAN"),
+    
+    ("Universidad Simón Bolívar", "Codificación Audiovisuales", "USIMONAN"),
+    ("Universidad Simón Bolívar", "Codificación Impresos", "USIMONAN"),
+    ("Universidad Simón Bolívar", "Notas Audiovisuales", "USIMONAN"),
+    ("Universidad Simón Bolívar", "Notas Impresos", "USIMONAN"),
+    
+    ("Universidad Tecnológica de Bolívar", "Codificación Audiovisuales", "UTB_AN"),
+    ("Universidad Tecnológica de Bolívar", "Codificación Impresos", "UTB_AN"),
+    ("Universidad Tecnológica de Bolívar", "Notas Audiovisuales", "UTB_AN"),
+    ("Universidad Tecnológica de Bolívar", "Notas Impresos", "UTB_AN")
+]
 
 # ======================================
 # CSS Personalizado
@@ -312,6 +366,54 @@ def mapped_tono(val):
     return str(val).strip()
 
 # ======================================
+# Identificación de Cliente por Nombre de Archivo
+# ======================================
+def detect_client_from_filename(filename):
+    if not filename:
+        return None
+    fn = unidecode(str(filename)).lower()
+    # Eliminar extensión típica
+    fn = re.sub(r'\.xlsx?$', '', fn).strip()
+    
+    # 1. Nissan / Nissan Competencia
+    if "niss" in fn:
+        if "com" in fn or "comp" in fn:
+            return "Nissan, Competencia"
+        return "Nissan"
+        
+    # 2. Chery / Chery Competencia / Chery 01-18
+    if "chery" in fn or "changan" in fn:
+        if "com" in fn or "comp" in fn:
+            return "Chery - Changan, Competencias"
+        return "Chery 01-18 | |19-31"
+        
+    # 3. Comfenalco
+    if "comfe" in fn or "comfenalco" in fn:
+        return "Comfenalco Valle"
+        
+    # 4. Fenavi / Avicultores
+    if "fenavi" in fn or "avicultores" in fn:
+        return "Federación Nacional de Avicultores de Colombia"
+        
+    # 5. Santa Fe / FSFB
+    if "santa" in fn or "fsfb" in fn or "fsantafe" in fn:
+        return "Fundación Santa Fe de Bogotá"
+        
+    # 6. Tigo
+    if "tigo" in fn:
+        return "Tigo"
+        
+    # 7. Simon Bolivar / Usimon
+    if "simon" in fn or "usimon" in fn or "unisimon" in fn:
+        return "Universidad Simón Bolívar"
+        
+    # 8. UTB / Tecnológica de Bolívar
+    if "utb" in fn or "tecnologica" in fn:
+        return "Universidad Tecnológica de Bolívar"
+        
+    return None
+
+# ======================================
 # Algoritmo de Duplicados Local
 # ======================================
 def _normalizar_url(url: str) -> str:
@@ -560,10 +662,14 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     return df
 
 # ======================================
-# Exportar a Excel Estructurado
+# Exportar a Excel Estructurado (Incluye Conteo)
 # ======================================
-def generate_output_excel(rows, km):
+def generate_output_excel(rows, km, uploaded_filename=None):
     wb = Workbook()
+    
+    # ----------------------------------
+    # Pestana 1: Resultado
+    # ----------------------------------
     ws = wb.active
     ws.title = "Resultado"
     
@@ -656,6 +762,59 @@ def generate_output_excel(rows, km):
             ws.column_dimensions[letter].width = 15
         else:
             ws.column_dimensions[letter].width = 20
+
+    # ----------------------------------
+    # Pestana 2: Conteo (Nueva Mejora)
+    # ----------------------------------
+    ws2 = wb.create_sheet(title="Conteo")
+    ws2.append(["Cliente / Contexto", "Tipo de Registro", "Código", "Conteo"])
+    
+    # Formatear encabezado de la pestaña de conteo
+    for i in range(1, 5):
+        ws2.cell(row=1, column=i).font = font_header
+
+    # Realizar el conteo de notas no duplicadas para el archivo actual
+    av_count = 0
+    im_count = 0
+    for r in rows:
+        if r.get("is_duplicate"):
+            continue
+        tipo_medio = normalizar_tipo_medio(str(r.get(km["tipodemedio"], "")))
+        if tipo_medio in ("Radio", "Televisión"):
+            av_count += 1
+        elif tipo_medio in ("Prensa", "Internet", "Revistas"):
+            im_count += 1
+
+    # Detectar a qué cliente asignarle el conteo basándose en el nombre de archivo cargado
+    detected_client = detect_client_from_filename(uploaded_filename)
+
+    # Llenar la tabla de conteo manteniendo el orden idéntico solicitado
+    for client, register_type, code in TEMPLATE_ROWS:
+        if register_type in ("Codificación Audiovisuales", "Codificación Impresos"):
+            # Dejar los campos de Codificación Audiovisuales y Codificación Impresos en 0
+            val = 0
+        else:
+            # Notas Audiovisuales o Notas Impresos
+            if detected_client == client:
+                if register_type == "Notas Audiovisuales":
+                    val = av_count
+                else: # Notas Impresos
+                    val = im_count
+            else:
+                val = "-"
+                
+        ws2.append([client, register_type, code, val])
+
+    # Aplicar formato de número a la columna de conteo e igualar dimensiones de columna
+    for r_idx in range(2, ws2.max_row + 1):
+        c_cell = ws2.cell(row=r_idx, column=4)
+        if isinstance(c_cell.value, (int, float)):
+            c_cell.number_format = '#,##0'
+
+    ws2.column_dimensions['A'].width = 45
+    ws2.column_dimensions['B'].width = 28
+    ws2.column_dimensions['C'].width = 18
+    ws2.column_dimensions['D'].width = 15
             
     buf = io.BytesIO()
     wb.save(buf)
@@ -743,7 +902,8 @@ def run_cleaning_process(df_file):
     gc.collect()
     ta = [r for r in rows if not r.get("is_duplicate")]
     
-    st.session_state["output_data"] = generate_output_excel(rows, km)
+    # Se pasa el nombre original del archivo para asociar los conteos al cliente
+    st.session_state["output_data"] = generate_output_excel(rows, km, uploaded_filename=df_file.name)
     st.session_state["output_filename"] = f"Dossier_Limpio_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     st.session_state["processing_complete"] = True
     st.session_state.update({
@@ -765,7 +925,7 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Limpieza de Xlsx Grill</div>
-            <div class="app-header-version">v2.5 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v2.6 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
