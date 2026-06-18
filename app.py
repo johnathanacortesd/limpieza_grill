@@ -16,7 +16,6 @@ from unidecode import unidecode
 import numpy as np
 import gc
 from pathlib import Path
-from typing import Dict
 
 # ======================================
 # Configuración general
@@ -29,59 +28,6 @@ st.set_page_config(
 )
 
 SIMILARITY_THRESHOLD_TITULOS = 0.93
-
-# Plantilla fija para el orden de la pestaña adicional
-TEMPLATE_ROWS = [
-    ("Chery 01-18 | |19-31", "Codificación Audiovisuales", "ANCHERY"),
-    ("Chery 01-18 | |19-31", "Codificación Impresos", "ANCHERY"),
-    ("Chery 01-18 | |19-31", "Notas Audiovisuales", "ANCHERY"),
-    ("Chery 01-18 | |19-31", "Notas Impresos", "ANCHERY"),
-    
-    ("Chery - Changan, Competencias", "Codificación Audiovisuales", "ANCHERY"),
-    ("Chery - Changan, Competencias", "Codificación Impresos", "ANCHERY"),
-    ("Chery - Changan, Competencias", "Notas Audiovisuales", "ANCHERY"),
-    ("Chery - Changan, Competencias", "Notas Impresos", "ANCHERY"),
-    
-    ("Comfenalco Valle", "Codificación Audiovisuales", "ACOMFEVALLE"),
-    ("Comfenalco Valle", "Codificación Impresos", "ACOMFEVALLE"),
-    ("Comfenalco Valle", "Notas Audiovisuales", "ACOMFEVALLE"),
-    ("Comfenalco Valle", "Notas Impresos", "ACOMFEVALLE"),
-    
-    ("Federación Nacional de Avicultores de Colombia", "Codificación Audiovisuales", "ANFENAVI"),
-    ("Federación Nacional de Avicultores de Colombia", "Codificación Impresos", "ANFENAVI"),
-    ("Federación Nacional de Avicultores de Colombia", "Notas Audiovisuales", "ANFENAVI"),
-    ("Federación Nacional de Avicultores de Colombia", "Notas Impresos", "ANFENAVI"),
-    
-    ("Fundación Santa Fe de Bogotá", "Codificación Audiovisuales", "FSANTAFE_AN"),
-    ("Fundación Santa Fe de Bogotá", "Codificación Impresos", "FSANTAFE_AN"),
-    ("Fundación Santa Fe de Bogotá", "Notas Audiovisuales", "FSANTAFE_AN"),
-    ("Fundación Santa Fe de Bogotá", "Notas Impresos", "FSANTAFE_AN"),
-    
-    ("Nissan", "Codificación Audiovisuales", "ANNISSAN"),
-    ("Nissan", "Codificación Impresos", "ANNISSAN"),
-    ("Nissan", "Notas Audiovisuales", "ANNISSAN"),
-    ("Nissan", "Notas Impresos", "ANNISSAN"),
-    
-    ("Nissan, Competencia", "Codificación Audiovisuales", "ANNISSAN"),
-    ("Nissan, Competencia", "Codificación Impresos", "ANNISSAN"),
-    ("Nissan, Competencia", "Notas Audiovisuales", "ANNISSAN"),
-    ("Nissan, Competencia", "Notas Impresos", "ANNISSAN"),
-    
-    ("Tigo", "Codificación Audiovisuales", "TIGOAN"),
-    ("Tigo", "Codificación Impresos", "TIGOAN"),
-    ("Tigo", "Notas Audiovisuales", "TIGOAN"),
-    ("Tigo", "Notas Impresos", "TIGOAN"),
-    
-    ("Universidad Simón Bolívar", "Codificación Audiovisuales", "USIMONAN"),
-    ("Universidad Simón Bolívar", "Codificación Impresos", "USIMONAN"),
-    ("Universidad Simón Bolívar", "Notas Audiovisuales", "USIMONAN"),
-    ("Universidad Simón Bolívar", "Notas Impresos", "USIMONAN"),
-    
-    ("Universidad Tecnológica de Bolívar", "Codificación Audiovisuales", "UTB_AN"),
-    ("Universidad Tecnológica de Bolívar", "Codificación Impresos", "UTB_AN"),
-    ("Universidad Tecnológica de Bolívar", "Notas Audiovisuales", "UTB_AN"),
-    ("Universidad Tecnológica de Bolívar", "Notas Impresos", "UTB_AN")
-]
 
 # ======================================
 # CSS Personalizado
@@ -313,21 +259,27 @@ def parse_numeric(val):
     num_commas = s.count(',')
 
     if num_dots > 1 and num_commas == 0:
+        # Puntos múltiples (ej. 156.884.624) -> separador de miles
         s = s.replace('.', '')
     elif num_commas > 1 and num_dots == 0:
+        # Comas múltiples (ej. 156,884,624) -> separador de miles
         s = s.replace(',', '')
     elif num_dots > 0 and num_commas > 0:
         dot_idx = s.rfind('.')
         comma_idx = s.rfind(',')
         if dot_idx > comma_idx:
+            # El punto es el decimal y la coma es de miles (Formato US)
             s = s.replace(',', '')
         else:
+            # La coma es el decimal y el punto es de miles (Formato ES)
             s = s.replace('.', '').replace(',', '.')
     elif num_dots == 1:
+        # Un único punto. Si hay exactamente 3 caracteres después del punto, se asume que es miles (ej. 156.884)
         parts = s.split('.')
         if len(parts[1]) == 3:
             s = s.replace('.', '')
     elif num_commas == 1:
+        # Una única coma. Si hay exactamente 3 caracteres después de la coma, se asume que es miles
         parts = s.split(',')
         if len(parts[1]) == 3:
             s = s.replace(',', '')
@@ -358,53 +310,6 @@ def mapped_tono(val):
     if s in ('', 'nan', 'none'):
         return ""
     return str(val).strip()
-
-# ======================================
-# Identificación de Cliente por Nombre de Archivo
-# ======================================
-def detect_client_from_filename(filename):
-    if not filename:
-        return None
-    fn = unidecode(str(filename)).lower()
-    fn = re.sub(r'\.xlsx?$', '', fn).strip()
-    
-    # 1. Nissan / Nissan Competencia
-    if "niss" in fn:
-        if "com" in fn or "comp" in fn:
-            return "Nissan, Competencia"
-        return "Nissan"
-        
-    # 2. Chery / Chery Competencia / Chery 01-18
-    if "chery" in fn or "changan" in fn:
-        if "com" in fn or "comp" in fn:
-            return "Chery - Changan, Competencias"
-        return "Chery 01-18 | |19-31"
-        
-    # 3. Comfenalco
-    if "comfe" in fn or "comfenalco" in fn:
-        return "Comfenalco Valle"
-        
-    # 4. Fenavi / Avicultores
-    if "fenavi" in fn or "avicultores" in fn:
-        return "Federación Nacional de Avicultores de Colombia"
-        
-    # 5. Santa Fe / FSFB
-    if "santa" in fn or "fsfb" in fn or "fsantafe" in fn:
-        return "Fundación Santa Fe de Bogotá"
-        
-    # 6. Tigo
-    if "tigo" in fn:
-        return "Tigo"
-        
-    # 7. Simon Bolivar / Usimon
-    if "simon" in fn or "usimon" in fn or "unisimon" in fn:
-        return "Universidad Simón Bolívar"
-        
-    # 8. UTB / Tecnológica de Bolívar
-    if "utb" in fn or "tecnologica" in fn:
-        return "Universidad Tecnológica de Bolívar"
-        
-    return None
 
 # ======================================
 # Algoritmo de Duplicados Local
@@ -530,8 +435,10 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     is_grafica = df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas'])
     is_internet = df['Tipo de Medio'] == 'Internet'
 
+    # Captura del texto totalmente original de la columna Resumen - Aclaracion
     raw_resumen_orig = get_column_robust(df, 'Resumen - Aclaracion')
 
+    # Mapeo Región
     if 'Medio' in df.columns:
         raw_medios_clean = df['Medio'].astype(str).str.lower().str.strip()
         df['Región'] = raw_medios_clean.map(region_map).fillna("N/A")
@@ -539,6 +446,7 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
         df['Medio'] = 'N/A'
         df['Región'] = 'N/A'
 
+    # Mapeo Medio para Internet
     if 'Medio' in df.columns:
         df.loc[is_internet, 'Medio'] = (
             df.loc[is_internet, 'Medio']
@@ -564,20 +472,29 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df.loc[is_av, 'Dimensión'] = df.loc[is_av, 'Duración - Nro. Caracteres']
     df.loc[is_av, 'Duración - Nro. Caracteres'] = 0
 
+    # Lógica de CPE y Revalorización: se leen las columnas del Excel original
     cpe_input = get_column_robust(df, 'CPE')
     valor_nota_input = get_column_robust(df, 'Valor de Nota')
 
+    # CPE resultante:
+    # Radio o Televisión (is_av) = columna CPE original
+    # Internet, Prensa o Revistas (is_grafica) = columna Valor de Nota original
     df['CPE'] = np.where(is_av, cpe_input, np.where(is_grafica, valor_nota_input, np.nan))
+
+    # revalorización resultante: se llena con la columna CPE original si es de tipo prensa, internet o revistas
     df['revalorización'] = np.where(is_grafica, cpe_input, np.nan)
 
     df['Tier'] = df.get('Tier', pd.Series(dtype=str))
     df['Audiencia'] = df.get('Audiencia', pd.Series(dtype=str))
     
+    # Conservar y transformar Tono
     df['Tono'] = get_column_robust(df, 'Tono').apply(mapped_tono)
     
+    # Conservar Tematica como Tema, y Subtema
     df['Tema'] = get_column_robust(df, 'Tematica').fillna('').astype(str).apply(clean_text)
     df['Subtema'] = get_column_robust(df, 'Subtema').fillna('').astype(str).apply(clean_text)
 
+    # Traer la información real de las columnas correspondientes del Excel de origen
     df['Producto'] = get_column_robust(df, 'Producto').fillna('').astype(str).apply(clean_text)
     df['Tipo de información'] = get_column_robust(df, 'Tipo de información').fillna('').astype(str).apply(clean_text)
     df['Nombre vocero'] = get_column_robust(df, 'Nombre vocero').fillna('').astype(str).apply(clean_text)
@@ -587,8 +504,10 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df['Tipo mencion 2'] = get_column_robust(df, 'Tipo mencion 2').fillna('').astype(str).apply(clean_text)
     df['Aparece Logo'] = get_column_robust(df, 'Aparece Logo').fillna('').astype(str).apply(clean_text)
 
+    # Asignar a 'resumen corto' exactamente el texto original que se leyó de forma robusta al inicio
     df['resumen corto'] = raw_resumen_orig.fillna('').astype(str).str.strip()
 
+    # Procesar limpieza normal para la columna final "Resumen - Aclaracion"
     cuerpo_col = 'CuerpoEs' if 'CuerpoEs' in df.columns else 'Resumen - Aclaracion'
     cuerpo_cleaned = df.get(cuerpo_col, pd.Series([''] * len(df))).astype(str).apply(clean_cuerpo)
 
@@ -600,6 +519,7 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
 
     df['Resumen - Aclaracion'] = np.where(is_av, cuerpo_cleaned, cuerpo_cleaned.apply(fmt_grafica))
 
+    # Links
     url_nota_av = df.get('URL Nota AV', df.get('Link Nota AV', pd.Series([''] * len(df))))
     url_streaming = df.get('URL (Streaming - Imagen)', pd.Series([''] * len(df)))
     
@@ -640,14 +560,10 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     return df
 
 # ======================================
-# Exportar a Excel Estructurado (Dos pestañas)
+# Exportar a Excel Estructurado
 # ======================================
-def generate_output_excel(rows, km, selected_client=None):
+def generate_output_excel(rows, km):
     wb = Workbook()
-    
-    # ----------------------------------
-    # Pestaña 1: Resultado
-    # ----------------------------------
     ws = wb.active
     ws.title = "Resultado"
     
@@ -721,6 +637,7 @@ def generate_output_excel(rows, km, selected_client=None):
         if isinstance(date_cell.value, (datetime.datetime, datetime.date)):
             date_cell.number_format = 'DD/MM/YYYY'
             
+        # Formatear columnas numéricas de forma explícita
         for ci, h in enumerate(ORDER, start=1):
             cell = ws.cell(row=current_row, column=ci)
             if cell.value is not None:
@@ -739,53 +656,6 @@ def generate_output_excel(rows, km, selected_client=None):
             ws.column_dimensions[letter].width = 15
         else:
             ws.column_dimensions[letter].width = 20
-
-    # ----------------------------------
-    # Pestaña 2: Conteo
-    # ----------------------------------
-    ws2 = wb.create_sheet(title="Conteo")
-    ws2.append(["Cliente / Contexto", "Tipo de Registro", "Código", "Conteo"])
-    
-    for i in range(1, 5):
-        ws2.cell(row=1, column=i).font = font_header
-
-    # Realizar el conteo de notas no duplicadas para el archivo actual
-    av_count = 0
-    im_count = 0
-    for r in rows:
-        if r.get("is_duplicate"):
-            continue
-        tipo_medio = normalizar_tipo_medio(str(r.get(km["tipodemedio"], "")))
-        if tipo_medio in ("Radio", "Televisión"):
-            av_count += 1
-        elif tipo_medio in ("Prensa", "Internet", "Revistas"):
-            im_count += 1
-
-    # Construir y estructurar fila por fila en el orden exacto solicitado
-    for client, register_type, code in TEMPLATE_ROWS:
-        if register_type in ("Codificación Audiovisuales", "Codificación Impresos"):
-            val = 0
-        else:
-            if selected_client == client:
-                if register_type == "Notas Audiovisuales":
-                    val = av_count
-                else: # Notas Impresos
-                    val = im_count
-            else:
-                val = "-"
-                
-        ws2.append([client, register_type, code, val])
-
-    # Aplicar formato de número a la columna Conteo
-    for r_idx in range(2, ws2.max_row + 1):
-        c_cell = ws2.cell(row=r_idx, column=4)
-        if isinstance(c_cell.value, (int, float)):
-            c_cell.number_format = '#,##0'
-
-    ws2.column_dimensions['A'].width = 45
-    ws2.column_dimensions['B'].width = 28
-    ws2.column_dimensions['C'].width = 18
-    ws2.column_dimensions['D'].width = 15
             
     buf = io.BytesIO()
     wb.save(buf)
@@ -872,31 +742,8 @@ def run_cleaning_process(df_file):
         
     gc.collect()
     ta = [r for r in rows if not r.get("is_duplicate")]
-
-    # Obtener totales independientes de notas de tipo Audiovisual e Impreso
-    av_count = 0
-    im_count = 0
-    for r in rows:
-        if r.get("is_duplicate"):
-            continue
-        tipo_medio = normalizar_tipo_medio(str(r.get(km["tipodemedio"], "")))
-        if tipo_medio in ("Radio", "Televisión"):
-            av_count += 1
-        elif tipo_medio in ("Prensa", "Internet", "Revistas"):
-            im_count += 1
-            
-    # Intentar detectar el cliente por el nombre de archivo cargado
-    detected_client = detect_client_from_filename(df_file.name)
     
-    # Almacenar en session state para posibilitar el render interactivo
-    st.session_state["cleaned_rows"] = rows
-    st.session_state["km"] = km
-    st.session_state["av_count"] = av_count
-    st.session_state["im_count"] = im_count
-    st.session_state["detected_client"] = detected_client
-    st.session_state["prev_selected_client"] = detected_client
-    
-    st.session_state["output_data"] = generate_output_excel(rows, km, detected_client)
+    st.session_state["output_data"] = generate_output_excel(rows, km)
     st.session_state["output_filename"] = f"Dossier_Limpio_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     st.session_state["processing_complete"] = True
     st.session_state.update({
@@ -918,7 +765,7 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Limpieza de Xlsx Grill</div>
-            <div class="app-header-version">v2.7 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v2.5 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
@@ -966,75 +813,20 @@ def main():
           <div class="metric-card m-time"><div class="metric-val" style="color:var(--blue)">{dur}</div><div class="metric-lbl">Tiempo de Ejecución</div></div>
         </div>""", unsafe_allow_html=True)
         
-        # Sistema de pestañas para vista previa directa en la interfaz
-        tab_download, tab_conteo = st.tabs(["📥 Descarga", "📊 Vista Previa de Conteo"])
-        
-        with tab_download:
-            c1, c2 = st.columns(2)
-            c1.download_button(
-                "⬇ Descargar Xlsx Limpio",
-                data=st.session_state.output_data,
-                file_name=st.session_state.output_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary"
-            )
-            if c2.button("Nuevo análisis", use_container_width=True):
-                pwd = st.session_state.get("password_correct")
-                st.session_state.clear()
-                st.session_state.password_correct = pwd
-                st.rerun()
-                
-        with tab_conteo:
-            st.markdown("### Tabla de Conteo Generada en el Excel")
-            st.write("Verifica o corrige el cliente detectado para este archivo:")
-            
-            # Extraer los nombres de clientes únicos presentes en la plantilla
-            client_options = ["Ninguno / No detectado"] + sorted(list(set([row[0] for row in TEMPLATE_ROWS])))
-            
-            default_idx = 0
-            detected_cl = st.session_state.get("detected_client")
-            if detected_cl in client_options:
-                default_idx = client_options.index(detected_cl)
-                
-            selected_client_ui = st.selectbox(
-                "Cliente seleccionado:",
-                options=client_options,
-                index=default_idx,
-                key="selected_client_ui"
-            )
-            
-            # Si el cliente es cambiado manualmente, se actualiza el Excel automáticamente
-            if st.session_state.get("prev_selected_client") != selected_client_ui:
-                st.session_state["prev_selected_client"] = selected_client_ui
-                client_param = selected_client_ui if selected_client_ui != "Ninguno / No detectado" else None
-                st.session_state["output_data"] = generate_output_excel(
-                    st.session_state["cleaned_rows"],
-                    st.session_state["km"],
-                    client_param
-                )
-                
-            # Generar datos locales de previsualización para mostrar en pantalla
-            preview_data = []
-            for client, register_type, code in TEMPLATE_ROWS:
-                val = "-"
-                if register_type in ("Codificación Audiovisuales", "Codificación Impresos"):
-                    val = 0
-                else:
-                    if selected_client_ui == client:
-                        if register_type == "Notas Audiovisuales":
-                            val = st.session_state["av_count"]
-                        else:
-                            val = st.session_state["im_count"]
-                preview_data.append({
-                    "Cliente / Contexto": client,
-                    "Tipo de Registro": register_type,
-                    "Código": code,
-                    "Conteo": val
-                })
-            
-            df_preview = pd.DataFrame(preview_data)
-            st.dataframe(df_preview, use_container_width=True, height=520)
+        c1, c2 = st.columns(2)
+        c1.download_button(
+            "⬇ Descargar Xlsx Limpio",
+            data=st.session_state.output_data,
+            file_name=st.session_state.output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
+        if c2.button("Nuevo análisis", use_container_width=True):
+            pwd = st.session_state.get("password_correct")
+            st.session_state.clear()
+            st.session_state.password_correct = pwd
+            st.rerun()
 
     st.markdown(
         '<div class="footer">Estructuración y Limpieza · Johnathan Cortés ©</div>',
