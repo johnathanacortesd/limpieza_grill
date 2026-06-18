@@ -703,7 +703,7 @@ def main():
     <div class="app-header">
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
-            <div class="app-header-title">Estructuración y Limpieza de Dossier</div>
+            <div class="app-header-title">Limpieza Xlsx de AdminGrill</div>
             <div class="app-header-version">v2.0 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
@@ -754,7 +754,7 @@ def main():
         
         c1, c2 = st.columns(2)
         c1.download_button(
-            "⬇ Descargar Dossier Limpio",
+            "⬇ Descargar xlsx Limpio",
             data=st.session_state.output_data,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
