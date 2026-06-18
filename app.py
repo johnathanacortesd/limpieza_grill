@@ -106,11 +106,9 @@ label[data-testid="stWidgetLabel"] p{font-family:'Google Sans',sans-serif!import
 .success-title{font-family:'Google Sans',sans-serif;font-size:1rem;font-weight:700;color:#047857;margin-bottom:0.1rem}
 .success-sub{font-size:0.8rem;color:var(--text2)}
 .auth-wrap{max-width:380px;margin:8vh auto 0;text-align:center}
-.auth-icon{width:60px;height:60px;background:linear-gradient(135deg,#f97316,#ea580c);border-radius:16px;display:inline-flex;align-items:center;justify-content:center;font-size:1.6rem;color:white;margin-bottom:1rem;box-shadow:0 4px 16px rgba(249,115,22,0.3);}
+.auth-icon{width:60px;height:60px;background:linear-gradient(135deg,#f97316,#ea580c);border-radius:16px;display:inline-flex;align-items:center;justify-content:center;font-size:1.6rem;color:white;margin-bottom:1rem;box-shadow:0 4px 166px rgba(249,115,22,0.3);}
 .auth-title{font-family:'Google Sans',sans-serif;font-size:1.5rem;font-weight:700;color:var(--text);margin-bottom:0.3rem}
 .auth-sub{font-size:0.85rem;color:var(--text3);margin-bottom:2rem}
-.cluster-info{background:var(--accent-bg);border:1px solid var(--accent-bdr);border-radius:var(--r);padding:0.5rem 0.8rem;margin:0.4rem 0;font-family:'Roboto Mono',monospace;font-size:0.68rem;color:var(--text2);line-height:1.6;}
-.cluster-info b{color:var(--accent2);font-size:0.72rem}
 [data-testid="stProgressBar"]>div>div{background:linear-gradient(90deg,#f97316,#fb923c,#fdba74)!important;border-radius:100px!important;height:5px!important;}
 [data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:var(--r2)!important;box-shadow:var(--shadow-sm)!important;overflow:hidden!important;}
 ::-webkit-scrollbar{width:6px;height:6px}
@@ -396,8 +394,10 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
         df['Tipo de Medio'] = 'Otro'
 
     is_av = df['Tipo de Medio'].isin(['Radio', 'Televisión'])
-    is_grafica = df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas'])
     is_internet = df['Tipo de Medio'] == 'Internet'
+
+    # Captura del texto totalmente original de la columna Resumen - Aclaracion
+    raw_resumen_orig = get_column_robust(df, 'Resumen - Aclaracion')
 
     # Mapeo Región
     if 'Medio' in df.columns:
@@ -433,14 +433,12 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df.loc[is_av, 'Dimensión'] = df.loc[is_av, 'Duración - Nro. Caracteres']
     df.loc[is_av, 'Duración - Nro. Caracteres'] = 0
 
-    # Lógica CPE y Revalorización
-    cpe_input = get_column_robust(df, 'CPE')
-    cpe_grafica = get_column_robust(df, 'Valor de Nota')
-    cpe_raw = np.where(cpe_input.notna() & (cpe_input != ""), cpe_input, cpe_grafica)
+    # Lógica CPE y Revalorización: se lee exclusivamente la columna CPE original del excel subido de forma robusta
+    cpe_raw = get_column_robust(df, 'CPE')
 
     is_reval_type = df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas'])
 
-    # Si es prensa, internet o revistas va a revalorización, de lo contrario (radio/tv) va a CPE
+    # Si es de prensa, internet o revista se pone el CPE en 'revalorización', de lo contrario (radio/televisión) se pone en 'CPE'
     df['revalorización'] = np.where(is_reval_type, cpe_raw, np.nan)
     df['CPE'] = np.where(~is_reval_type, cpe_raw, np.nan)
 
@@ -454,7 +452,7 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df['Tema'] = get_column_robust(df, 'Tematica').fillna('').astype(str).apply(clean_text)
     df['Subtema'] = get_column_robust(df, 'Subtema').fillna('').astype(str).apply(clean_text)
 
-    # Traer y limpiar la información del excel para las columnas nuevas solicitadas
+    # Traer la información real de las columnas correspondientes del Excel de origen
     df['Producto'] = get_column_robust(df, 'Producto').fillna('').astype(str).apply(clean_text)
     df['Tipo de información'] = get_column_robust(df, 'Tipo de información').fillna('').astype(str).apply(clean_text)
     df['Nombre vocero'] = get_column_robust(df, 'Nombre vocero').fillna('').astype(str).apply(clean_text)
@@ -464,7 +462,10 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df['Tipo mencion 2'] = get_column_robust(df, 'Tipo mencion 2').fillna('').astype(str).apply(clean_text)
     df['Aparece Logo'] = get_column_robust(df, 'Aparece Logo').fillna('').astype(str).apply(clean_text)
 
-    # Resumen corto
+    # Asignar a 'resumen corto' exactamente el texto original que se leyó de forma robusta al inicio
+    df['resumen corto'] = raw_resumen_orig.fillna('').astype(str).str.strip()
+
+    # Procesar limpieza normal para la columna final "Resumen - Aclaracion"
     cuerpo_col = 'CuerpoEs' if 'CuerpoEs' in df.columns else 'Resumen - Aclaracion'
     cuerpo_cleaned = df.get(cuerpo_col, pd.Series([''] * len(df))).astype(str).apply(clean_cuerpo)
 
@@ -475,7 +476,6 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
         return '\n\n'.join(parrafos) if len(parrafos) > 1 else text
 
     df['Resumen - Aclaracion'] = np.where(is_av, cuerpo_cleaned, cuerpo_cleaned.apply(fmt_grafica))
-    df['resumen corto'] = df['Resumen - Aclaracion']
 
     # Links
     url_nota_av = df.get('URL Nota AV', df.get('Link Nota AV', pd.Series([''] * len(df))))
@@ -719,8 +719,8 @@ def main():
     <div class="app-header">
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
-            <div class="app-header-title">Limpieza Xlsx AdminGrill</div>
-            <div class="app-header-version">v2.1 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-title">Estructuración y Limpieza de Dossier</div>
+            <div class="app-header-version">v2.2 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
@@ -770,7 +770,7 @@ def main():
         
         c1, c2 = st.columns(2)
         c1.download_button(
-            "⬇ Descargar Xlsx Limpio",
+            "⬇ Descargar Dossier Limpio",
             data=st.session_state.output_data,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
