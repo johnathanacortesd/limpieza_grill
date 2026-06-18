@@ -248,7 +248,44 @@ def parse_numeric(val):
     s = str(val).strip()
     if not s:
         return None
-    s = s.replace(',', '')
+    
+    # Remover símbolos monetarios o caracteres extraños, conservando números, puntos, comas, signos y notación científica
+    s = re.sub(r'[^\d.,\-eE]', '', s)
+    if not s:
+        return None
+
+    # Contador de puntos y comas
+    num_dots = s.count('.')
+    num_commas = s.count(',')
+
+    if num_dots > 1 and num_commas == 0:
+        # Puntos múltiples (ej. 156.884.624) -> separador de miles
+        s = s.replace('.', '')
+    elif num_commas > 1 and num_dots == 0:
+        # Comas múltiples (ej. 156,884,624) -> separador de miles
+        s = s.replace(',', '')
+    elif num_dots > 0 and num_commas > 0:
+        dot_idx = s.rfind('.')
+        comma_idx = s.rfind(',')
+        if dot_idx > comma_idx:
+            # El punto es el decimal y la coma es de miles (Formato US)
+            s = s.replace(',', '')
+        else:
+            # La coma es el decimal y el punto es de miles (Formato ES)
+            s = s.replace('.', '').replace(',', '.')
+    elif num_dots == 1:
+        # Un único punto. Si hay exactamente 3 caracteres después del punto, se asume que es miles (ej. 156.884)
+        parts = s.split('.')
+        if len(parts[1]) == 3:
+            s = s.replace('.', '')
+    elif num_commas == 1:
+        # Una única coma. Si hay exactamente 3 caracteres después de la coma, se asume que es miles
+        parts = s.split(',')
+        if len(parts[1]) == 3:
+            s = s.replace(',', '')
+        else:
+            s = s.replace(',', '.')
+
     try:
         f_val = float(s)
         if f_val.is_integer():
@@ -435,16 +472,16 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df.loc[is_av, 'Dimensión'] = df.loc[is_av, 'Duración - Nro. Caracteres']
     df.loc[is_av, 'Duración - Nro. Caracteres'] = 0
 
-    # Lógica de CPE y Revalorización robusta sin notación científica
+    # Lógica de CPE y Revalorización: se leen las columnas del Excel original
     cpe_input = get_column_robust(df, 'CPE')
     valor_nota_input = get_column_robust(df, 'Valor de Nota')
 
-    # CPE resultante en base a las nuevas reglas:
+    # CPE resultante:
     # Radio o Televisión (is_av) = columna CPE original
     # Internet, Prensa o Revistas (is_grafica) = columna Valor de Nota original
     df['CPE'] = np.where(is_av, cpe_input, np.where(is_grafica, valor_nota_input, np.nan))
 
-    # revalorización resultante: mantiene la regla de que solo para Internet, Prensa o Revistas se asigne la columna CPE original
+    # revalorización resultante: se llena con la columna CPE original si es de tipo prensa, internet o revistas
     df['revalorización'] = np.where(is_grafica, cpe_input, np.nan)
 
     df['Tier'] = df.get('Tier', pd.Series(dtype=str))
@@ -542,7 +579,10 @@ def generate_output_excel(rows, km):
         "ID duplicada"
     ]
     
-    NUM = {"ID Noticia", "Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres", "CPE", "revalorización", "Tier", "Audiencia"}
+    THOUSANDS_COLS = {"Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres", "Tier", "Audiencia"}
+    CURRENCY_COLS = {"CPE", "revalorización"}
+    NUM = {"ID Noticia"} | THOUSANDS_COLS | CURRENCY_COLS
+    
     ws.append(ORDER)
     
     font_hyperlink = Font(color="0563C1", underline="single")
@@ -597,16 +637,16 @@ def generate_output_excel(rows, km):
         if isinstance(date_cell.value, (datetime.datetime, datetime.date)):
             date_cell.number_format = 'DD/MM/YYYY'
             
-        cpe_idx = ORDER.index("CPE") + 1
-        reval_idx = ORDER.index("revalorización") + 1
-        
-        cpe_cell = ws.cell(row=current_row, column=cpe_idx)
-        reval_cell = ws.cell(row=current_row, column=reval_idx)
-        
-        if isinstance(cpe_cell.value, (int, float)):
-            cpe_cell.number_format = '#,##0'
-        if isinstance(reval_cell.value, (int, float)):
-            reval_cell.number_format = '#,##0'
+        # Formatear columnas numéricas de forma explícita
+        for ci, h in enumerate(ORDER, start=1):
+            cell = ws.cell(row=current_row, column=ci)
+            if cell.value is not None:
+                if h in CURRENCY_COLS:
+                    if isinstance(cell.value, (int, float)):
+                        cell.number_format = '$#,##0'
+                elif h in THOUSANDS_COLS:
+                    if isinstance(cell.value, (int, float)):
+                        cell.number_format = '#,##0'
             
     for i, col_name in enumerate(ORDER, start=1):
         letter = ws.cell(row=1, column=i).column_letter
@@ -725,7 +765,7 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Limpieza de Xlsx Grill</div>
-            <div class="app-header-version">v2.4 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v2.5 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
