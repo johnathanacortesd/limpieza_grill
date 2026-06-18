@@ -191,6 +191,14 @@ def norm_key(text):
     if text is None: return ""
     return re.sub(r"[^a-z0-9]+", "", unidecode(str(text).strip().lower()))
 
+def get_column_robust(df, name):
+    """Busca una columna de forma insensible a mayúsculas, minúsculas, espacios y tildes."""
+    name_norm = norm_key(name)
+    for col in df.columns:
+        if norm_key(col) == name_norm:
+            return df[col]
+    return pd.Series([np.nan] * len(df))
+
 def clean_text(text):
     if not isinstance(text, str):
         return text
@@ -425,28 +433,36 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df.loc[is_av, 'Dimensión'] = df.loc[is_av, 'Duración - Nro. Caracteres']
     df.loc[is_av, 'Duración - Nro. Caracteres'] = 0
 
-    # Lógica de CPE y revalorización
-    cpe_av = df.get('CPE', pd.Series([np.nan] * len(df)))
-    cpe_grafica = df.get('Valor de Nota', pd.Series([np.nan] * len(df)))
-    cpe_raw = np.where(is_av, cpe_av, np.where(is_grafica, cpe_grafica, np.nan))
+    # Lógica CPE y Revalorización
+    cpe_input = get_column_robust(df, 'CPE')
+    cpe_grafica = get_column_robust(df, 'Valor de Nota')
+    cpe_raw = np.where(cpe_input.notna() & (cpe_input != ""), cpe_input, cpe_grafica)
 
-    # Definir CPE y revalorización según Tipo de Medio
-    df['revalorización'] = np.where(df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas']), cpe_raw, np.nan)
-    df['CPE'] = np.where(~df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas']), cpe_raw, np.nan)
+    is_reval_type = df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas'])
+
+    # Si es prensa, internet o revistas va a revalorización, de lo contrario (radio/tv) va a CPE
+    df['revalorización'] = np.where(is_reval_type, cpe_raw, np.nan)
+    df['CPE'] = np.where(~is_reval_type, cpe_raw, np.nan)
 
     df['Tier'] = df.get('Tier', pd.Series(dtype=str))
     df['Audiencia'] = df.get('Audiencia', pd.Series(dtype=str))
     
     # Conservar y transformar Tono
-    df['Tono'] = df.get('Tono', pd.Series(dtype=str)).apply(mapped_tono)
+    df['Tono'] = get_column_robust(df, 'Tono').apply(mapped_tono)
     
     # Conservar Tematica como Tema, y Subtema
-    df['Tema'] = df.get('Tematica', pd.Series(dtype=str)).fillna('').astype(str).apply(clean_text)
-    df['Subtema'] = df.get('Subtema', pd.Series(dtype=str)).fillna('').astype(str).apply(clean_text)
+    df['Tema'] = get_column_robust(df, 'Tematica').fillna('').astype(str).apply(clean_text)
+    df['Subtema'] = get_column_robust(df, 'Subtema').fillna('').astype(str).apply(clean_text)
 
-    # Añadir nuevas columnas vacías solicitadas
-    for col in ["Producto", "Tipo de información", "Nombre vocero", "Mención en Titulo", "Mención en Foto", "Tipo mencion", "Tipo mencion 2", "Aparece Logo"]:
-        df[col] = ""
+    # Traer y limpiar la información del excel para las columnas nuevas solicitadas
+    df['Producto'] = get_column_robust(df, 'Producto').fillna('').astype(str).apply(clean_text)
+    df['Tipo de información'] = get_column_robust(df, 'Tipo de información').fillna('').astype(str).apply(clean_text)
+    df['Nombre vocero'] = get_column_robust(df, 'Nombre vocero').fillna('').astype(str).apply(clean_text)
+    df['Mención en Titulo'] = get_column_robust(df, 'Mención en Titulo').fillna('').astype(str).apply(clean_text)
+    df['Mención en Foto'] = get_column_robust(df, 'Mención en Foto').fillna('').astype(str).apply(clean_text)
+    df['Tipo mencion'] = get_column_robust(df, 'Tipo mencion').fillna('').astype(str).apply(clean_text)
+    df['Tipo mencion 2'] = get_column_robust(df, 'Tipo mencion 2').fillna('').astype(str).apply(clean_text)
+    df['Aparece Logo'] = get_column_robust(df, 'Aparece Logo').fillna('').astype(str).apply(clean_text)
 
     # Resumen corto
     cuerpo_col = 'CuerpoEs' if 'CuerpoEs' in df.columns else 'Resumen - Aclaracion'
@@ -703,8 +719,8 @@ def main():
     <div class="app-header">
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
-            <div class="app-header-title">Limpieza Xlsx de AdminGrill</div>
-            <div class="app-header-version">v2.0 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-title">Estructuración y Limpieza de Dossier</div>
+            <div class="app-header-version">v2.1 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
@@ -754,7 +770,7 @@ def main():
         
         c1, c2 = st.columns(2)
         c1.download_button(
-            "⬇ Descargar xlsx Limpio",
+            "⬇ Descargar Dossier Limpio",
             data=st.session_state.output_data,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
