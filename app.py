@@ -394,6 +394,7 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
         df['Tipo de Medio'] = 'Otro'
 
     is_av = df['Tipo de Medio'].isin(['Radio', 'Televisión'])
+    is_grafica = df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas'])
     is_internet = df['Tipo de Medio'] == 'Internet'
 
     # Captura del texto totalmente original de la columna Resumen - Aclaracion
@@ -436,11 +437,9 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     # Lógica CPE y Revalorización: se lee exclusivamente la columna CPE original del excel subido de forma robusta
     cpe_raw = get_column_robust(df, 'CPE')
 
-    is_reval_type = df['Tipo de Medio'].isin(['Prensa', 'Internet', 'Revistas'])
-
     # Si es de prensa, internet o revista se pone el CPE en 'revalorización', de lo contrario (radio/televisión) se pone en 'CPE'
-    df['revalorización'] = np.where(is_reval_type, cpe_raw, np.nan)
-    df['CPE'] = np.where(~is_reval_type, cpe_raw, np.nan)
+    df['revalorización'] = np.where(is_grafica, cpe_raw, np.nan)
+    df['CPE'] = np.where(~is_grafica, cpe_raw, np.nan)
 
     df['Tier'] = df.get('Tier', pd.Series(dtype=str))
     df['Audiencia'] = df.get('Audiencia', pd.Series(dtype=str))
@@ -720,7 +719,7 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Estructuración y Limpieza de Dossier</div>
-            <div class="app-header-version">v2.2 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v2.3 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
