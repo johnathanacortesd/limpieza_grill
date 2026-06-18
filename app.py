@@ -248,6 +248,7 @@ def parse_numeric(val):
     s = str(val).strip()
     if not s:
         return None
+    s = s.replace(',', '')
     try:
         f_val = float(s)
         if f_val.is_integer():
@@ -434,12 +435,17 @@ def read_and_normalize_dossier(sheet, region_map, internet_map):
     df.loc[is_av, 'Dimensión'] = df.loc[is_av, 'Duración - Nro. Caracteres']
     df.loc[is_av, 'Duración - Nro. Caracteres'] = 0
 
-    # Lógica CPE y Revalorización: se lee exclusivamente la columna CPE original del excel subido de forma robusta
-    cpe_raw = get_column_robust(df, 'CPE')
+    # Lógica de CPE y Revalorización robusta sin notación científica
+    cpe_input = get_column_robust(df, 'CPE')
+    valor_nota_input = get_column_robust(df, 'Valor de Nota')
 
-    # Si es de prensa, internet o revista se pone el CPE en 'revalorización', de lo contrario (radio/televisión) se pone en 'CPE'
-    df['revalorización'] = np.where(is_grafica, cpe_raw, np.nan)
-    df['CPE'] = np.where(~is_grafica, cpe_raw, np.nan)
+    # CPE resultante en base a las nuevas reglas:
+    # Radio o Televisión (is_av) = columna CPE original
+    # Internet, Prensa o Revistas (is_grafica) = columna Valor de Nota original
+    df['CPE'] = np.where(is_av, cpe_input, np.where(is_grafica, valor_nota_input, np.nan))
+
+    # revalorización resultante: mantiene la regla de que solo para Internet, Prensa o Revistas se asigne la columna CPE original
+    df['revalorización'] = np.where(is_grafica, cpe_input, np.nan)
 
     df['Tier'] = df.get('Tier', pd.Series(dtype=str))
     df['Audiencia'] = df.get('Audiencia', pd.Series(dtype=str))
@@ -718,8 +724,8 @@ def main():
     <div class="app-header">
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
-            <div class="app-header-title">Estructuración y Limpieza de Dossier</div>
-            <div class="app-header-version">v2.3 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-title">Limpieza de Xlsx Grill</div>
+            <div class="app-header-version">v2.4 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
@@ -769,7 +775,7 @@ def main():
         
         c1, c2 = st.columns(2)
         c1.download_button(
-            "⬇ Descargar Dossier Limpio",
+            "⬇ Descargar Xlsx Limpio",
             data=st.session_state.output_data,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
