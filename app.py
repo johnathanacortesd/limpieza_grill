@@ -16,6 +16,7 @@ from unidecode import unidecode
 import numpy as np
 import gc
 from pathlib import Path
+from typing import Dict
 
 # ======================================
 # Configuración general
@@ -120,6 +121,7 @@ label[data-testid="stWidgetLabel"] p{font-family:'Google Sans',sans-serif!import
 [data-testid="stVerticalBlock"]>div{gap:0.3rem!important}
 [data-testid="stHorizontalBlock"]>div{gap:0.4rem!important}
 hr{border-color:var(--s3)!important;margin:0.5rem 0!important}
+.config-badge{display:inline-flex;align-items:center;gap:0.4rem;background:var(--s2);border:1px solid var(--border);border-radius:100px;padding:0.2rem 0.7rem;font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text3);margin-bottom:0.6rem;}
 @media(max-width:768px){
     .metrics-grid{grid-template-columns:repeat(2,1fr)}
     .app-header{flex-direction:column;text-align:center;gap:0.5rem;padding:1rem}
@@ -152,35 +154,64 @@ def check_password():
     return False
 
 # ======================================
-# Mapeos de Configuración Local
+# Configuración vía Google Sheets (CSV público)
 # ======================================
-def load_local_config():
-    paths_to_try = [
-        Path("Configuracion.xlsx"),
-        Path("configuracion.xlsx"),
-        Path("Config.xlsx"),
-        Path("config.xlsx")
-    ]
-    for p in paths_to_try:
-        if p.exists():
-            return p
-    base = Path(__file__).parent
-    for f in base.iterdir():
-        if f.suffix.lower() == '.xlsx' and 'config' in f.stem.lower():
-            return f
-    return None
+# En Google Sheets: Archivo > Compartir > Publicar en la web > eliges la hoja
+# "Regiones" (o "Internet") > formato CSV > copias la URL resultante y la
+# guardas en .streamlit/secrets.toml (o en la config de Secrets de Streamlit
+# Cloud) así:
+#
+# REGIONES_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-xxxx/pub?gid=0&single=true&output=csv"
+# INTERNET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-xxxx/pub?gid=123456&single=true&output=csv"
+#
+# Cada hoja debe tener 2 columnas: la primera con el nombre del medio y la
+# segunda con el valor mapeado (región o nombre normalizado de internet).
+# No necesita encabezados especiales, solo mantener el mismo orden de columnas
+# que ya usa el archivo Configuracion.xlsx actual.
 
-def load_config(config_source):
-    config_sheets = pd.read_excel(config_source, sheet_name=None, engine='openpyxl')
-    region_map = pd.Series(
-        config_sheets['Regiones'].iloc[:, 1].values,
-        index=config_sheets['Regiones'].iloc[:, 0].astype(str).str.lower().str.strip()
+CONFIG_CACHE_TTL = 300  # segundos; súbelo si tu Sheet cambia poco, bájalo si necesitas ver cambios casi al instante
+
+@st.cache_data(ttl=CONFIG_CACHE_TTL, show_spinner=False)
+def _fetch_map_from_csv(csv_url: str) -> dict:
+    df = pd.read_csv(csv_url, header=None, dtype=str)
+    # Si la primera fila parece encabezado (texto no vacío en ambas columnas
+    # pero repetido en filas siguientes), simplemente se ignora vía dropna.
+    df = df.dropna(how="all")
+    mapping = pd.Series(
+        df.iloc[:, 1].values,
+        index=df.iloc[:, 0].astype(str).str.lower().str.strip()
     ).to_dict()
-    internet_map = pd.Series(
-        config_sheets['Internet'].iloc[:, 1].values,
-        index=config_sheets['Internet'].iloc[:, 0].astype(str).str.lower().str.strip()
-    ).to_dict()
+    # Limpiar posibles filas de encabezado tipo "medio"/"región"
+    mapping = {k: v for k, v in mapping.items() if k not in ("nan", "")}
+    return mapping
+
+def load_config_from_sheets():
+    """
+    Carga los mapeos de Región e Internet directamente desde Google Sheets.
+    Requiere REGIONES_CSV_URL e INTERNET_CSV_URL en st.secrets.
+    """
+    regiones_url = st.secrets.get("REGIONES_CSV_URL")
+    internet_url = st.secrets.get("INTERNET_CSV_URL")
+
+    if not regiones_url or not internet_url:
+        st.error(
+            "❌ Faltan las URLs de configuración. Agrega REGIONES_CSV_URL e "
+            "INTERNET_CSV_URL en los Secrets de la app (ver comentario en el código)."
+        )
+        st.stop()
+
+    try:
+        region_map = _fetch_map_from_csv(regiones_url)
+        internet_map = _fetch_map_from_csv(internet_url)
+    except Exception as e:
+        st.error(f"❌ No se pudo leer la configuración desde Google Sheets: {e}")
+        st.stop()
+
     return region_map, internet_map
+
+def refresh_config_cache():
+    """Limpia la cache para forzar una relectura inmediata del Sheets."""
+    _fetch_map_from_csv.clear()
 
 # ======================================
 # Utilidades de Limpieza de Texto
@@ -668,15 +699,19 @@ def run_cleaning_process(df_file):
     t0 = time.time()
     
     with st.status("Cargando Configuración y Dossier", expanded=True) as s:
-        config_path = load_local_config()
-        if not config_path:
-            st.error("❌ No se encontró el archivo 'Configuracion.xlsx' en el repositorio.")
-            st.stop()
-            
-        region_map, internet_map = load_config(config_path)
+        region_map, internet_map = load_config_from_sheets()
+
         wb_in = load_workbook(df_file, data_only=True)
         df_normalized = read_and_normalize_dossier(wb_in.active, region_map, internet_map)
-        
+
+        # Detección de medios sin mapear (no aparecen en el Sheets de Regiones)
+        medios_sin_region = sorted(set(
+            df_normalized.loc[df_normalized['Región'] == 'N/A', 'Medio']
+            .astype(str).str.strip()
+        ) - {'', 'nan', 'None'})
+        if medios_sin_region:
+            st.session_state["medios_sin_mapear"] = medios_sin_region
+
         # Expansión por punto y coma (;) en Menciones - Empresa
         rows_expanded = []
         for idx, row_series in df_normalized.iterrows():
@@ -765,12 +800,23 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Limpieza de Xlsx Grill</div>
-            <div class="app-header-version">v2.5 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v2.6 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
 
     if not st.session_state.get("processing_complete", False):
+        col_cfg1, col_cfg2 = st.columns([4, 1])
+        with col_cfg1:
+            st.markdown(
+                '<span class="config-badge">⚙ Configuración: Google Sheets (Regiones / Internet)</span>',
+                unsafe_allow_html=True
+            )
+        with col_cfg2:
+            if st.button("↻ Refrescar config", use_container_width=True):
+                refresh_config_cache()
+                st.success("Config recargada")
+
         with st.form("main_form"):
             st.markdown('<div class="sec-label">Sube el archivo de entrada</div>', unsafe_allow_html=True)
             st.markdown("""
@@ -804,6 +850,14 @@ def main():
             '<div class="success-sub">El archivo estructurado se encuentra listo para descargar</div></div></div>',
             unsafe_allow_html=True
         )
+
+        medios_sin_mapear = st.session_state.get("medios_sin_mapear")
+        if medios_sin_mapear:
+            st.warning(
+                "⚠️ Los siguientes medios no tienen región asignada en el Sheets de "
+                f"'Regiones' (quedaron como N/A): {', '.join(medios_sin_mapear)}. "
+                "Agrégalos en el Google Sheets para que se mapeen automáticamente la próxima vez."
+            )
         
         st.markdown(f"""
         <div class="metrics-grid">
