@@ -1,17 +1,12 @@
-streamlit
-pandas
-openpyxl
-openai==0.28.0
-tqdm
-scikit-learn
-unidecode
-nltk
-joblib
-bertopic
-xgboost==2.0.3
-selenium>=4.15.0
-requests
-beautifulsoup4
+# Dependencias reales de la app (Streamlit Cloud instala este archivo).
+# No incluir bertopic/xgboost/selenium: no se usan y rompen o retrasan el deploy.
+
+streamlit>=1.32.0
+pandas>=2.1.0
+numpy>=1.26.0
+openpyxl>=3.1.2
+xlsxwriter>=3.2.0
+python-calamine>=0.3.1
+unidecode>=1.3.8
+requests>=2.31.0
 starlette<0.40.0
-xlsxwriter
-python-calamine

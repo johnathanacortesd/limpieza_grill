@@ -1,8 +1,10 @@
 # ======================================
 # Importaciones
 # ======================================
+import html
 import io
 import logging
+import time
 import streamlit as st
 import pandas as pd
 
@@ -107,8 +109,29 @@ label[data-testid="stWidgetLabel"] p{font-family:'Google Sans',sans-serif!import
 [data-testid="stHorizontalBlock"]>div{gap:0.4rem!important}
 hr{border-color:var(--s3)!important;margin:0.5rem 0!important}
 .config-badge{display:inline-flex;align-items:center;gap:0.4rem;background:var(--s2);border:1px solid var(--border);border-radius:100px;padding:0.2rem 0.7rem;font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text3);margin-bottom:0.6rem;}
+.live-panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.2rem;margin:0.4rem 0 0.8rem;box-shadow:var(--shadow-md);position:relative;overflow:hidden;}
+.live-panel::after{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#f97316,#fb923c,#fdba74);}
+.live-head{display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;}
+.live-pulse{width:12px;height:12px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(249,115,22,0.6);animation:livePulse 1.4s ease-out infinite;flex-shrink:0;}
+@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0.55)}70%{box-shadow:0 0 0 12px rgba(249,115,22,0)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}
+.live-title{font-family:'Google Sans',sans-serif;font-size:1.02rem;font-weight:700;color:var(--text);line-height:1.2}
+.live-sub{font-size:0.78rem;color:var(--text3);margin-top:0.15rem}
+.live-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin:0.4rem 0 0.7rem}
+.live-metric{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:0.55rem 0.5rem;text-align:center}
+.live-metric-val{font-family:'Google Sans',sans-serif;font-size:1.15rem;font-weight:700;color:var(--accent2);line-height:1.1}
+.live-metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.58rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-top:0.2rem}
+.step-list{display:flex;flex-direction:column;gap:0.28rem;margin:0.2rem 0 0.6rem}
+.step-item{display:flex;align-items:center;gap:0.5rem;font-size:0.8rem;color:var(--text3);padding:0.22rem 0.15rem}
+.step-item .dot{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:0.65rem;flex-shrink:0;background:var(--s1)}
+.step-item.is-done{color:var(--green2);font-weight:500}
+.step-item.is-done .dot{background:var(--green);border-color:var(--green);color:#fff}
+.step-item.is-active{color:var(--accent2);font-weight:700}
+.step-item.is-active .dot{border-color:var(--accent);background:var(--accent-bg);color:var(--accent2);animation:livePulse 1.4s ease-out infinite}
+.live-hint{background:var(--accent-bg);border:1px solid var(--accent-bdr);color:var(--accent3);border-radius:var(--r);padding:0.55rem 0.75rem;font-size:0.78rem;line-height:1.35}
+.live-detail{font-size:0.8rem;color:var(--text2);margin-top:0.45rem;font-family:'Google Sans Text',sans-serif}
 @media(max-width:768px){
     .metrics-grid{grid-template-columns:repeat(2,1fr)}
+    .live-metrics{grid-template-columns:1fr 1fr 1fr}
     .app-header{flex-direction:column;text-align:center;gap:0.5rem;padding:1rem}
 }
 </style>
@@ -201,27 +224,129 @@ def refresh_config_cache():
 # ======================================
 # Proceso Principal
 # ======================================
-def run_cleaning_process(df_file):
-    """Ejecuta el pipeline y reporta cada etapa en la UI (incluye la exportación)."""
+PIPELINE_STEPS = [
+    ("config", "Cargar configuración"),
+    ("read", "Leer el Excel"),
+    ("norm", "Limpiar y normalizar"),
+    ("dups", "Menciones y duplicadas"),
+    ("export", "Generar archivo de resultado"),
+]
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    return f"{seconds // 60} min {seconds % 60:02d} s"
+
+
+def _fmt_size(n_bytes: int) -> str:
+    if not n_bytes:
+        return ""
+    mb = n_bytes / (1024 * 1024)
+    if mb < 0.1:
+        return f"{n_bytes / 1024:.0f} KB"
+    return f"{mb:.1f} MB"
+
+
+def _active_step(pct: int, msg: str) -> str:
+    if pct >= 100 or "Limpieza completada" in msg:
+        return "done"
+    if pct >= 70 or "Generando archivo" in msg or "Guardando" in msg:
+        return "export"
+    if pct >= 55 or "duplicad" in msg.lower() or "Expandiendo" in msg:
+        return "dups"
+    if pct >= 40 or "Normaliz" in msg or "Columnas" in msg:
+        return "norm"
+    if pct >= 8 or "Excel" in msg or "Leyendo" in msg or "hipervínculo" in msg:
+        return "read"
+    return "config"
+
+
+def _render_live_html(pct, msg, elapsed, file_label, active_key):
+    steps_html = []
+    reached_active = False
+    for key, label in PIPELINE_STEPS:
+        if active_key == "done":
+            cls, mark = "is-done", "✓"
+        elif key == active_key:
+            cls, mark = "is-active", "●"
+            reached_active = True
+        elif not reached_active:
+            cls, mark = "is-done", "✓"
+        else:
+            cls, mark = "", ""
+        steps_html.append(
+            f'<div class="step-item {cls}"><span class="dot">{mark}</span>{label}</div>'
+        )
+    file_line = f" · {html.escape(file_label)}" if file_label else ""
+    title = "Procesando dossier"
+    if active_key == "done":
+        title = "Limpieza completada"
+    elif active_key == "export":
+        title = "Generando el archivo de resultado"
+    safe_msg = html.escape(str(msg or ""))
+    return f"""
+    <div class="live-panel">
+      <div class="live-head">
+        <div class="live-pulse"></div>
+        <div>
+          <div class="live-title">{title}</div>
+          <div class="live-sub">El proceso sigue activo{file_line}. No cierres esta pestaña.</div>
+        </div>
+      </div>
+      <div class="live-metrics">
+        <div class="live-metric"><div class="live-metric-val">{int(pct)}%</div><div class="live-metric-lbl">Avance</div></div>
+        <div class="live-metric"><div class="live-metric-val">{elapsed}</div><div class="live-metric-lbl">Tiempo transcurrido</div></div>
+        <div class="live-metric"><div class="live-metric-val">en curso</div><div class="live-metric-lbl">Estado</div></div>
+      </div>
+      <div class="step-list">{''.join(steps_html)}</div>
+      <div class="live-hint">No está congelado. En archivos grandes (~17 MB) la barra se mueve despacio durante la lectura y otra vez al generar el xlsx de salida.</div>
+      <div class="live-detail">{safe_msg}</div>
+    </div>
+    """
+
+
+def run_cleaning_process(df_file, file_meta=None):
+    """Ejecuta el pipeline y muestra avance continuo (incluye la exportación)."""
+    file_meta = file_meta or {}
+    file_label = file_meta.get("name", "")
+    size_lbl = _fmt_size(file_meta.get("size") or 0)
+    if file_label and size_lbl:
+        file_label = f"{file_label} ({size_lbl})"
+    elif size_lbl:
+        file_label = size_lbl
+
+    t_start = time.time()
+    panel = st.empty()
     progress_bar = st.progress(0, text="Iniciando…")
-    seen_stages = set()
     result = None
 
-    with st.status("Cargando Configuración y Dossier", expanded=True) as status_widget:
+    def paint(pct, msg):
+        elapsed = _fmt_elapsed(time.time() - t_start)
+        active = _active_step(pct, msg)
+        panel.markdown(
+            _render_live_html(pct, msg, elapsed, file_label, active),
+            unsafe_allow_html=True,
+        )
+        progress_bar.progress(min(100, max(0, int(pct))), text=msg)
+
+    paint(1, "Cargando configuración…")
+
+    with st.status("Procesando — el indicador de arriba se actualiza en cada paso", expanded=True) as status_widget:
         def on_progress(pct, msg):
-            progress_bar.progress(min(100, max(0, int(pct))), text=msg)
-            stage_key = msg.split("…")[0].strip()
-            if stage_key not in seen_stages:
-                seen_stages.add(stage_key)
-                st.write(msg)
+            paint(pct, msg)
+            status_widget.update(label=f"{int(pct)}% · {msg}")
             if "Archivo estructurado con éxito" in msg:
-                status_widget.update(label="✓ Archivo estructurado con éxito")
+                status_widget.update(label="✓ Archivo estructurado con éxito · generando resultado…")
 
         try:
-            st.write("Cargando configuración…")
+            st.write("Si este texto cambia y el porcentaje sube, el proceso no está congelado.")
             region_map, internet_map = load_config_from_sheets()
             result = process_dossier(df_file, region_map, internet_map, progress=on_progress)
+            paint(100, "Limpieza completada")
             status_widget.update(label="✓ Limpieza completada", state="complete")
+            time.sleep(0.4)
         except Exception as exc:
             logger.exception("Fallo en el proceso de limpieza")
             status_widget.update(label="Error durante el procesamiento", state="error")
@@ -257,13 +382,15 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Limpieza de Xlsx Grill</div>
-            <div class="app-header-version">v2.7 · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v2.8 · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador</div>
     </div>""", unsafe_allow_html=True)
 
     if st.session_state.get("pending_dossier"):
-        run_cleaning_process(io.BytesIO(st.session_state.pop("pending_dossier")))
+        blob = st.session_state.pop("pending_dossier")
+        meta = st.session_state.pop("pending_meta", {}) or {}
+        run_cleaning_process(io.BytesIO(blob), meta)
         st.rerun()
 
     if not st.session_state.get("processing_complete", False):
@@ -286,7 +413,7 @@ def main():
                     <div class="upload-zone-icon uz-dossier">📋</div>
                     <div class="upload-zone-text">
                         <div class="upload-zone-title">Dossier de Noticias</div>
-                        <div class="upload-zone-desc">Sube el archivo .xlsx para aplicar el flujo de normalización</div>
+                        <div class="upload-zone-desc">Sube el .xlsx. En archivos grandes (~17 MB) verás porcentaje, pasos y tiempo: no está congelado.</div>
                     </div>
                 </div>
             </div>""", unsafe_allow_html=True)
@@ -300,6 +427,10 @@ def main():
                     # Procesar fuera del form para que la barra de progreso
                     # y el status se actualicen durante la exportación.
                     st.session_state["pending_dossier"] = f1.getvalue()
+                    st.session_state["pending_meta"] = {
+                        "name": f1.name,
+                        "size": int(getattr(f1, "size", 0) or len(st.session_state["pending_dossier"])),
+                    }
                     st.rerun()
     else:
         total = st.session_state.total_rows
