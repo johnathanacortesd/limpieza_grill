@@ -134,64 +134,125 @@ class TestHyperlinks(unittest.TestCase):
 
 
 class TestDuplicates(unittest.TestCase):
-    def test_same_internet_url_and_mencion_is_duplicate(self):
+    def _row(self, **kwargs):
+        base = {
+            "ID Noticia": 1,
+            "Tipo de Medio": "Internet",
+            "Medio": "El Tiempo",
+            "Título": "Titular",
+            "Hora": "10:00:00",
+            "URL Nota": None,
+            "Link Nota": None,
+            "Link (Streaming - Imagen)": None,
+            "Menciones - Empresa": "Acme",
+            "is_duplicate": False,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_same_url_nota_and_mencion_is_duplicate_regardless_of_title(self):
         rows = [
-            {
-                "ID Noticia": 1,
-                "Tipo de Medio": "Internet",
-                "Medio": "El Tiempo",
-                "Título": "Alpha titular único",
-                "Hora": "10:00",
-                "Link Nota": {"value": "Link", "url": "https://www.example.com/a"},
-                "Link (Streaming - Imagen)": None,
-                "Menciones - Empresa": "Acme",
-                "is_duplicate": False,
-            },
-            {
-                "ID Noticia": 2,
-                "Tipo de Medio": "Internet",
-                "Medio": "El Tiempo",
-                "Título": "Beta titular distinto por completo xyz",
-                "Hora": "11:00",
-                "Link Nota": {"value": "Link", "url": "https://example.com/a"},
-                "Link (Streaming - Imagen)": None,
-                "Menciones - Empresa": "Acme",
-                "is_duplicate": False,
-            },
+            self._row(
+                **{
+                    "ID Noticia": 1,
+                    "Título": "Alpha titular único",
+                    "URL Nota": {"value": "Link", "url": "https://www.example.com/a"},
+                    "Link (Streaming - Imagen)": {"value": "Link", "url": "https://www.example.com/a"},
+                }
+            ),
+            self._row(
+                **{
+                    "ID Noticia": 2,
+                    "Título": "Beta titular distinto por completo xyz",
+                    "URL Nota": {"value": "Link", "url": "https://example.com/a"},
+                    "Link (Streaming - Imagen)": {"value": "Link", "url": "https://example.com/a"},
+                }
+            ),
         ]
         out = detectar_duplicados_avanzado(rows, KEY_MAP)
         self.assertFalse(out[0]["is_duplicate"])
         self.assertTrue(out[1]["is_duplicate"])
         self.assertEqual(out[1]["ID duplicada"], 1)
 
-    def test_similar_titles_same_medio_mencion(self):
+    def test_same_mencion_different_url_nota_is_not_duplicate(self):
         rows = [
-            {
-                "ID Noticia": 10,
-                "Tipo de Medio": "Internet",
-                "Medio": "El Tiempo",
-                "Título": "Gobierno anuncia reforma tributaria nacional",
-                "Hora": "10:00",
-                "Link Nota": {"value": "Link", "url": "https://example.com/t1"},
-                "Link (Streaming - Imagen)": None,
-                "Menciones - Empresa": "Acme",
-                "is_duplicate": False,
-            },
-            {
-                "ID Noticia": 11,
-                "Tipo de Medio": "Internet",
-                "Medio": "El Tiempo",
-                "Título": "Gobierno anuncia reforma tributaria nacional hoy",
-                "Hora": "11:00",
-                "Link Nota": {"value": "Link", "url": "https://example.com/t2"},
-                "Link (Streaming - Imagen)": None,
-                "Menciones - Empresa": "Acme",
-                "is_duplicate": False,
-            },
+            self._row(
+                **{
+                    "ID Noticia": 10,
+                    "Título": "Gobierno anuncia reforma tributaria nacional",
+                    "URL Nota": {"value": "Link", "url": "https://example.com/t1"},
+                    "Link (Streaming - Imagen)": {"value": "Link", "url": "https://example.com/t1"},
+                }
+            ),
+            self._row(
+                **{
+                    "ID Noticia": 11,
+                    "Título": "Gobierno anuncia reforma tributaria nacional hoy",
+                    "URL Nota": {"value": "Link", "url": "https://example.com/t2"},
+                    "Link (Streaming - Imagen)": {"value": "Link", "url": "https://example.com/t2"},
+                }
+            ),
         ]
         out = detectar_duplicados_avanzado(rows, KEY_MAP)
-        flagged = [r for r in out if r["is_duplicate"]]
-        self.assertEqual(len(flagged), 1, "titles at >=0.93 similarity should collapse")
+        self.assertFalse(out[0]["is_duplicate"])
+        self.assertFalse(out[1]["is_duplicate"])
+
+    def test_av_same_mencion_medio_hora_is_duplicate(self):
+        for tipo in ("Radio", "Televisión", "AM", "FM", "Aire", "Cable"):
+            with self.subTest(tipo=tipo):
+                rows = [
+                    self._row(
+                        **{
+                            "ID Noticia": 1,
+                            "Tipo de Medio": tipo,
+                            "Medio": "Caracol",
+                            "Hora": "10:00",
+                            "Título": "Noticiero mediodía",
+                            "Menciones - Empresa": "Acme",
+                        }
+                    ),
+                    self._row(
+                        **{
+                            "ID Noticia": 2,
+                            "Tipo de Medio": tipo,
+                            "Medio": "Caracol",
+                            "Hora": "10:00:00",
+                            "Título": "Otro título totalmente distinto",
+                            "Menciones - Empresa": "Acme",
+                        }
+                    ),
+                ]
+                out = detectar_duplicados_avanzado(rows, KEY_MAP)
+                self.assertFalse(out[0]["is_duplicate"])
+                self.assertTrue(out[1]["is_duplicate"], tipo)
+                self.assertEqual(out[1]["ID duplicada"], 1)
+
+    def test_av_different_hora_is_not_duplicate_even_with_same_title(self):
+        rows = [
+            self._row(
+                **{
+                    "ID Noticia": 1,
+                    "Tipo de Medio": "Radio",
+                    "Medio": "Caracol",
+                    "Hora": "10:00:00",
+                    "Título": "Gobierno anuncia reforma tributaria nacional",
+                    "Menciones - Empresa": "Acme",
+                }
+            ),
+            self._row(
+                **{
+                    "ID Noticia": 2,
+                    "Tipo de Medio": "Radio",
+                    "Medio": "Caracol",
+                    "Hora": "11:00:00",
+                    "Título": "Gobierno anuncia reforma tributaria nacional",
+                    "Menciones - Empresa": "Acme",
+                }
+            ),
+        ]
+        out = detectar_duplicados_avanzado(rows, KEY_MAP)
+        self.assertFalse(out[0]["is_duplicate"])
+        self.assertFalse(out[1]["is_duplicate"])
 
 
 class TestExport(unittest.TestCase):

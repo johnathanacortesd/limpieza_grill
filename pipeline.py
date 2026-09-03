@@ -5,28 +5,33 @@ import datetime
 import gc
 import io
 import logging
+import math
 import os
 import re
 import time
-from collections import defaultdict
-from difflib import SequenceMatcher
 from typing import Callable, Dict, List, Optional, Tuple
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 
 import numpy as np
 import pandas as pd
-from openpyxl import load_workbook, Workbook
-from openpyxl.cell import WriteOnlyCell
-from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
+import xlsxwriter
+from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, range_boundaries
 from unidecode import unidecode
 
 logger = logging.getLogger("limpieza_grill")
 
-SIMILARITY_THRESHOLD_TITULOS = 0.93
 ProgressCb = Optional[Callable[[int, str], None]]
+TIPOS_AV = frozenset({"Radio", "Televisión"})
+TIPO_MEDIO_MAP = {
+    "online": "Internet", "internet": "Internet",
+    "diario": "Prensa",
+    "am": "Radio", "fm": "Radio", "radio": "Radio",
+    "aire": "Televisión", "cable": "Televisión", "tv": "Televisión",
+    "television": "Televisión", "televisión": "Televisión",
+    "revista": "Revistas", "revistas": "Revistas",
+}
 
 OUTPUT_COLUMNS = [
     "ID Noticia", "Fecha", "Hora", "Medio", "Tipo de Medio",
@@ -282,14 +287,7 @@ def normalizar_tipo_medio(tipo_raw):
     if not isinstance(tipo_raw, str):
         return str(tipo_raw)
     t = unidecode(tipo_raw.strip().lower())
-    return {
-        "online": "Internet", "internet": "Internet",
-        "diario": "Prensa",
-        "am": "Radio", "fm": "Radio", "radio": "Radio",
-        "aire": "Televisión", "cable": "Televisión", "tv": "Televisión",
-        "television": "Televisión", "televisión": "Televisión",
-        "revista": "Revistas", "revistas": "Revistas",
-    }.get(t, str(tipo_raw).strip().title() or "Otro")
+    return TIPO_MEDIO_MAP.get(t, str(tipo_raw).strip().title() or "Otro")
 
 
 def parse_numeric(val):
@@ -357,7 +355,7 @@ def mapped_tono(val):
 
 
 # ======================================
-# Algoritmo de Duplicados Local
+# Algoritmo de Duplicados
 # ======================================
 def _normalizar_url(url: str) -> str:
     if not url:
@@ -369,24 +367,58 @@ def _normalizar_url(url: str) -> str:
     return url
 
 
-def _titles_similar(a: str, b: str) -> bool:
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    la, lb = len(a), len(b)
-    # SequenceMatcher.ratio() = 2*M/(len(a)+len(b)); skip pairs that cannot reach the threshold.
-    if (2 * min(la, lb) / (la + lb)) < SIMILARITY_THRESHOLD_TITULOS:
-        return False
-    return SequenceMatcher(None, a, b).ratio() >= SIMILARITY_THRESHOLD_TITULOS
+def _extract_url(val) -> str:
+    """URL desde hipervínculo {value,url}, texto http, o vacío."""
+    if val is None:
+        return ""
+    if isinstance(val, dict):
+        return str(val.get("url") or "").strip()
+    if isinstance(val, float) and pd.isna(val):
+        return ""
+    s = str(val).strip()
+    if s.lower() in ("", "nan", "none", "link"):
+        return ""
+    return s
+
+
+def _normalizar_hora(val) -> str:
+    """Compara horas de AV como HH:MM:SS (10:00 == 10:00:00)."""
+    if val is None:
+        return ""
+    if isinstance(val, float) and pd.isna(val):
+        return ""
+    if isinstance(val, pd.Timestamp):
+        if pd.isna(val):
+            return ""
+        return val.strftime("%H:%M:%S")
+    if isinstance(val, datetime.datetime):
+        return val.strftime("%H:%M:%S")
+    if isinstance(val, datetime.time):
+        return val.strftime("%H:%M:%S")
+    s = str(val).strip()
+    if s.lower() in ("", "nan", "nat", "none"):
+        return ""
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+    if m:
+        h, mi, se = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+        if 0 <= h < 24 and 0 <= mi < 60 and 0 <= se < 60:
+            return f"{h:02d}:{mi:02d}:{se:02d}"
+    return s
 
 
 def detectar_duplicados_avanzado(rows, km):
-    """Marca duplicados in-place (sin deepcopy) para no duplicar la RAM del dossier."""
+    """
+    Reglas (el título no decide duplicados):
+
+    - Internet / gráfica: misma URL Nota + misma Menciones - Empresa → duplicada.
+      Distinta URL Nota, aunque la mención (o el título) coincida → no es duplicada.
+    - AM / FM / Aire / Cable / Radio / Televisión: misma mención + mismo Medio +
+      misma Hora → duplicada. Distinta hora → no es duplicada (aunque el título
+      sea igual o parecido).
+    """
     processed = rows
-    seen_url, seen_bcast = {}, {}
-    seen_streaming: Dict[tuple, int] = {}
-    tb = defaultdict(list)
+    seen_url = {}
+    seen_bcast = {}
 
     for i, row in enumerate(processed):
         if row.get("is_duplicate"):
@@ -394,75 +426,34 @@ def detectar_duplicados_avanzado(rows, km):
 
         tipo = normalizar_tipo_medio(str(row.get(km["tipodemedio"], "")))
         mencion = norm_key(row.get(km["menciones"], ""))
-        medio = norm_key(row.get(km["medio"], ""))
-
-        streaming_url_raw = row.get(km["link_streaming"])
-        if isinstance(streaming_url_raw, dict):
-            streaming_url_raw = streaming_url_raw.get("url")
-
-        if streaming_url_raw and mencion:
-            streaming_url_norm = _normalizar_url(str(streaming_url_raw))
-            if streaming_url_norm:
-                sk = (streaming_url_norm, mencion)
-                if sk in seen_streaming:
-                    row["is_duplicate"] = True
-                    row[km["idduplicada"]] = processed[seen_streaming[sk]].get(km["idnoticia"], "")
-                    continue
-                seen_streaming[sk] = i
-
-        if tipo == "Internet":
-            li = row.get(km["link_nota"])
-            url = li.get("url") if isinstance(li, dict) else li
-            if url and mencion:
-                url_norm = _normalizar_url(str(url))
-                k = (url_norm, mencion)
-                if k in seen_url:
-                    row["is_duplicate"] = True
-                    row[km["idduplicada"]] = processed[seen_url[k]].get(km["idnoticia"], "")
-                    continue
-                seen_url[k] = i
-            if medio and mencion:
-                tb[(medio, mencion)].append(i)
-
-        elif tipo in ("Radio", "Televisión"):
-            hora = str(row.get(km["hora"], "")).strip()
-            if mencion and medio and hora:
-                k = (mencion, medio, hora)
-                if k in seen_bcast:
-                    row["is_duplicate"] = True
-                    row[km["idduplicada"]] = processed[seen_bcast[k]].get(km["idnoticia"], "")
-                else:
-                    seen_bcast[k] = i
-
-    prefix_len = 8
-    for idxs in tb.values():
-        if len(idxs) < 2:
+        if not mencion:
             continue
-        items = []
-        for idx in idxs:
-            if processed[idx].get("is_duplicate"):
+
+        if tipo in TIPOS_AV:
+            medio = norm_key(row.get(km["medio"], ""))
+            hora = _normalizar_hora(row.get(km["hora"]))
+            if not medio or not hora:
                 continue
-            title = normalize_title_for_comparison(processed[idx].get(km["titulo"]))
-            items.append((title, idx))
-        items.sort(key=lambda x: x[0])
-        n = len(items)
-        for i in range(n):
-            ta, a = items[i]
-            if processed[a].get("is_duplicate"):
-                continue
-            for j in range(i + 1, n):
-                tb_, b = items[j]
-                if processed[b].get("is_duplicate"):
-                    continue
-                if ta and tb_ and ta[:prefix_len] != tb_[:prefix_len]:
-                    break
-                if ta and tb_ and _titles_similar(ta, tb_):
-                    if len(ta) < len(tb_):
-                        processed[a]["is_duplicate"] = True
-                        processed[a][km["idduplicada"]] = processed[b].get(km["idnoticia"], "")
-                        break
-                    processed[b]["is_duplicate"] = True
-                    processed[b][km["idduplicada"]] = processed[a].get(km["idnoticia"], "")
+            k = (mencion, medio, hora)
+            if k in seen_bcast:
+                row["is_duplicate"] = True
+                row[km["idduplicada"]] = processed[seen_bcast[k]].get(km["idnoticia"], "")
+            else:
+                seen_bcast[k] = i
+            continue
+
+        url = _extract_url(row.get("URL Nota")) or _extract_url(row.get(km["link_streaming"]))
+        if not url:
+            continue
+        url_norm = _normalizar_url(url)
+        if not url_norm:
+            continue
+        k = (url_norm, mencion)
+        if k in seen_url:
+            row["is_duplicate"] = True
+            row[km["idduplicada"]] = processed[seen_url[k]].get(km["idnoticia"], "")
+        else:
+            seen_url[k] = i
 
     return processed
 
@@ -471,8 +462,65 @@ def detectar_duplicados_avanzado(rows, km):
 # Lectura y Estructuración de Datos
 # ======================================
 def load_dossier_dataframe(file_bytes: bytes, progress: ProgressCb = None) -> pd.DataFrame:
-    """Lee el xlsx en modo streaming (read_only) y fusiona hipervínculos del XML."""
+    """Lee el xlsx con Calamine (Rust) y fusiona hipervínculos del XML."""
     emit_progress(progress, 8, "Abriendo archivo Excel…")
+    try:
+        return _load_dossier_calamine(file_bytes, progress)
+    except Exception:
+        logger.exception("Calamine no pudo leer el xlsx; se usa openpyxl en modo streaming.")
+        return _load_dossier_openpyxl(file_bytes, progress)
+
+
+def _rows_to_dataframe(raw_headers, data_rows, hyperlinks, progress: ProgressCb = None) -> pd.DataFrame:
+    rows = []
+    empty_streak = 0
+    for ridx, values in enumerate(data_rows, start=2):
+        if all(v is None or v == "" for v in values):
+            empty_streak += 1
+            if empty_streak >= 50:
+                break
+            continue
+        empty_streak = 0
+        row_data = {}
+        for i, h in enumerate(raw_headers):
+            if not h:
+                continue
+            val = values[i] if i < len(values) else None
+            url = hyperlinks.get((ridx, i + 1))
+            if url:
+                row_data[h] = {"value": val or "Link", "url": url}
+            else:
+                row_data[h] = val
+        rows.append(row_data)
+        if progress and (len(rows) % 800 == 0):
+            emit_progress(
+                progress,
+                min(39, 16 + len(rows) // 400),
+                f"Leyendo filas del dossier… {len(rows)}",
+            )
+    emit_progress(progress, 40, f"Leídas {len(rows)} filas. Normalizando columnas…")
+    return pd.DataFrame(rows)
+
+
+def _load_dossier_calamine(file_bytes: bytes, progress: ProgressCb = None) -> pd.DataFrame:
+    from python_calamine import CalamineWorkbook
+
+    wb = CalamineWorkbook.from_filelike(io.BytesIO(file_bytes))
+    sheet_title = wb.sheet_names[0]
+    emit_progress(progress, 12, f"Extrayendo hipervínculos de «{sheet_title}»…")
+    hyperlinks = extract_hyperlinks_from_xlsx(file_bytes, sheet_title)
+    logger.info("Hoja '%s': %s hipervínculos externos (calamine)", sheet_title, len(hyperlinks))
+    emit_progress(progress, 16, "Leyendo filas del dossier…")
+    sheet = wb.get_sheet_by_name(sheet_title)
+    data = sheet.to_python(skip_empty_area=False)
+    if not data:
+        return pd.DataFrame()
+    raw_headers = list(data[0])
+    return _rows_to_dataframe(raw_headers, data[1:], hyperlinks, progress)
+
+
+def _load_dossier_openpyxl(file_bytes: bytes, progress: ProgressCb = None) -> pd.DataFrame:
+    emit_progress(progress, 8, "Abriendo archivo Excel (openpyxl)…")
     bio = io.BytesIO(file_bytes)
     wb = load_workbook(bio, read_only=True, data_only=True)
     try:
@@ -480,43 +528,15 @@ def load_dossier_dataframe(file_bytes: bytes, progress: ProgressCb = None) -> pd
         sheet_title = sheet.title or "Sheet"
         emit_progress(progress, 12, f"Extrayendo hipervínculos de «{sheet_title}»…")
         hyperlinks = extract_hyperlinks_from_xlsx(file_bytes, sheet_title)
-        logger.info("Hoja '%s': %s hipervínculos externos", sheet_title, len(hyperlinks))
-
+        logger.info("Hoja '%s': %s hipervínculos externos (openpyxl)", sheet_title, len(hyperlinks))
         emit_progress(progress, 16, "Leyendo filas del dossier…")
         it = sheet.iter_rows()
         header_row = next(it, None)
         if header_row is None:
             return pd.DataFrame()
-
         raw_headers = [c.value for c in header_row]
-        rows = []
-        empty_streak = 0
-        for ridx, row in enumerate(it, start=2):
-            if all(c.value is None for c in row):
-                empty_streak += 1
-                if empty_streak >= 50:
-                    break
-                continue
-            empty_streak = 0
-            row_data = {}
-            for i, h in enumerate(raw_headers):
-                if not h:
-                    continue
-                val = row[i].value if i < len(row) else None
-                url = hyperlinks.get((ridx, i + 1))
-                if url:
-                    row_data[h] = {"value": val or "Link", "url": url}
-                else:
-                    row_data[h] = val
-            rows.append(row_data)
-            if progress and (len(rows) % 400 == 0):
-                emit_progress(
-                    progress,
-                    min(39, 16 + len(rows) // 400),
-                    f"Leyendo filas del dossier… {len(rows)}",
-                )
-        emit_progress(progress, 40, f"Leídas {len(rows)} filas. Normalizando columnas…")
-        return pd.DataFrame(rows)
+        data_rows = ([c.value for c in row] for row in it)
+        return _rows_to_dataframe(raw_headers, data_rows, hyperlinks, progress)
     finally:
         wb.close()
         bio.close()
@@ -526,13 +546,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     if df is None or df.empty:
         return pd.DataFrame()
 
-    tipo_medio_map = {
-        "online": "Internet", "internet": "Internet",
-        "diario": "Prensa",
-        "am": "Radio", "fm": "Radio",
-        "aire": "Televisión", "cable": "Televisión",
-        "revista": "Revistas", "revistas": "Revistas",
-    }
+    tipo_medio_map = TIPO_MEDIO_MAP
 
     if "Tipo de Medio" in df.columns:
         df["Tipo de Medio"] = (
@@ -543,7 +557,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     else:
         df["Tipo de Medio"] = "Otro"
 
-    is_av = df["Tipo de Medio"].isin(["Radio", "Televisión"])
+    is_av = df["Tipo de Medio"].isin(list(TIPOS_AV))
     is_grafica = df["Tipo de Medio"].isin(["Prensa", "Internet", "Revistas"])
     is_internet = df["Tipo de Medio"] == "Internet"
 
@@ -712,42 +726,52 @@ def expand_menciones(df) -> List[dict]:
 
 
 # ======================================
-# Exportar a Excel (write_only, sin ws.max_row)
+# Exportar a Excel (XlsxWriter, streaming)
 # ======================================
 def generate_output_excel(rows, km, progress: ProgressCb = None):
     """
-    Genera el xlsx de salida en modo write_only.
-    Evita consultar el índice máximo de fila por cada registro (costo cuadrático
-    sobre todas las celdas) y no retiene el libro completo en memoria, que era
-    el cuelgue tras estructurar.
+    Genera el xlsx de salida con XlsxWriter en constant_memory.
+    Es el motor adecuado para esta limpieza: escribe en streaming, soporta
+    hipervínculos y formatos, y no retiene el libro completo en RAM.
     """
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Resultado")
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(
+        buf,
+        {
+            "constant_memory": True,
+            "strings_to_urls": False,
+            "nan_inf_to_errors": False,
+        },
+    )
+    ws = wb.add_worksheet("Resultado")
+    fmt_header = wb.add_format({"bold": True})
+    fmt_link = wb.add_format({"font_color": "#0563C1", "underline": 1, "align": "left"})
+    fmt_date = wb.add_format({"num_format": "DD/MM/YYYY"})
+    fmt_currency = wb.add_format({"num_format": "$#,##0"})
+    fmt_thousands = wb.add_format({"num_format": "#,##0"})
 
-    font_hyperlink = Font(color="0563C1", underline="single")
-    align_left = Alignment(horizontal="left")
-    font_header = Font(bold=True)
-
-    for i, col_name in enumerate(OUTPUT_COLUMNS, start=1):
-        letter = get_column_letter(i)
+    for i, col_name in enumerate(OUTPUT_COLUMNS):
         if col_name in ["Título", "Resumen - Aclaracion", "resumen corto"]:
-            ws.column_dimensions[letter].width = 50
+            ws.set_column(i, i, 50)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
-            ws.column_dimensions[letter].width = 15
+            ws.set_column(i, i, 15)
         else:
-            ws.column_dimensions[letter].width = 20
-
-    header_cells = []
-    for col_name in OUTPUT_COLUMNS:
-        cell = WriteOnlyCell(ws, value=col_name)
-        cell.font = font_header
-        header_cells.append(cell)
-    ws.append(header_cells)
+            ws.set_column(i, i, 20)
+        ws.write(0, i, col_name, fmt_header)
 
     n = len(rows)
     step = max(1, n // 50) if n else 1
     emit_progress(progress, 0, f"Generando archivo de resultado… 0/{n} filas")
 
+    try:
+        _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_currency, fmt_thousands)
+        emit_progress(progress, 100, "Guardando archivo Excel…")
+    finally:
+        wb.close()
+    return buf.getvalue()
+
+
+def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_currency, fmt_thousands):
     for i, row in enumerate(rows):
         tk = km.get("titulo")
         if tk and tk in row:
@@ -756,19 +780,19 @@ def generate_output_excel(rows, km, progress: ProgressCb = None):
         if rk and rk in row:
             row[rk] = corregir_texto(row.get(rk))
 
-        cells = []
-        for h in OUTPUT_COLUMNS:
+        excel_row = i + 1
+        for cidx, h in enumerate(OUTPUT_COLUMNS):
             val = row.get(h)
             cv = None
             url = None
 
-            if h == "Fecha" and pd.notna(val):
+            if h == "Fecha" and val is not None and not isinstance(val, dict) and pd.notna(val):
                 if isinstance(val, pd.Timestamp):
                     cv = val.to_pydatetime()
                 elif isinstance(val, (datetime.datetime, datetime.date)):
                     cv = val
                 else:
-                    cv = str(val) if val is not None else None
+                    cv = str(val)
             elif h in NUMERIC_COLS:
                 cv = parse_numeric(val)
             elif isinstance(val, dict) and "url" in val:
@@ -782,28 +806,38 @@ def generate_output_excel(rows, km, progress: ProgressCb = None):
                 else:
                     cv = str(val)
 
-            cell = WriteOnlyCell(ws, value=cv)
             if url:
-                cell.hyperlink = url
-                cell.font = font_hyperlink
-                cell.alignment = align_left
-            if h == "Fecha" and isinstance(cv, (datetime.datetime, datetime.date)):
-                cell.number_format = "DD/MM/YYYY"
-            elif h in CURRENCY_COLS and isinstance(cv, (int, float)):
-                cell.number_format = "$#,##0"
-            elif h in THOUSANDS_COLS and isinstance(cv, (int, float)):
-                cell.number_format = "#,##0"
-            cells.append(cell)
-
-        ws.append(cells)
+                display = str(cv or "Link")
+                try:
+                    ws.write_url(excel_row, cidx, str(url), fmt_link, string=display)
+                except Exception:
+                    ws.write(excel_row, cidx, display, fmt_link)
+            elif h == "Fecha" and isinstance(cv, datetime.datetime):
+                ws.write_datetime(excel_row, cidx, cv, fmt_date)
+            elif h == "Fecha" and isinstance(cv, datetime.date):
+                ws.write_datetime(
+                    excel_row,
+                    cidx,
+                    datetime.datetime(cv.year, cv.month, cv.day),
+                    fmt_date,
+                )
+            elif h in CURRENCY_COLS and isinstance(cv, (int, float)) and math.isfinite(cv):
+                ws.write_number(excel_row, cidx, cv, fmt_currency)
+            elif h in THOUSANDS_COLS and isinstance(cv, (int, float)) and math.isfinite(cv):
+                ws.write_number(excel_row, cidx, cv, fmt_thousands)
+            elif cv is None or cv == "":
+                ws.write_blank(excel_row, cidx, None)
+            elif isinstance(cv, float) and not math.isfinite(cv):
+                ws.write_blank(excel_row, cidx, None)
+            else:
+                ws.write(excel_row, cidx, cv)
 
         if progress and (i % step == 0 or i == n - 1):
-            emit_progress(progress, int((i + 1) / n * 100) if n else 100, f"Generando archivo de resultado… {i + 1}/{n} filas")
-
-    emit_progress(progress, 100, "Guardando archivo Excel…")
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+            emit_progress(
+                progress,
+                int((i + 1) / n * 100) if n else 100,
+                f"Generando archivo de resultado… {i + 1}/{n} filas",
+            )
 
 
 def process_dossier(file_obj, region_map, internet_map, progress: ProgressCb = None) -> dict:
