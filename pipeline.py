@@ -510,9 +510,10 @@ def _load_dossier_calamine(file_bytes: bytes, progress: ProgressCb = None) -> pd
     emit_progress(progress, 12, f"Extrayendo hipervínculos de «{sheet_title}»…")
     hyperlinks = extract_hyperlinks_from_xlsx(file_bytes, sheet_title)
     logger.info("Hoja '%s': %s hipervínculos externos (calamine)", sheet_title, len(hyperlinks))
-    emit_progress(progress, 16, "Leyendo filas del dossier…")
+    emit_progress(progress, 16, "Leyendo celdas del Excel (archivos grandes tardan aquí)…")
     sheet = wb.get_sheet_by_name(sheet_title)
     data = sheet.to_python(skip_empty_area=False)
+    emit_progress(progress, 22, f"Celdas leídas ({len(data)} filas en hoja). Armando tabla…")
     if not data:
         return pd.DataFrame()
     raw_headers = list(data[0])
@@ -545,6 +546,8 @@ def _load_dossier_openpyxl(file_bytes: bytes, progress: ProgressCb = None) -> pd
 def normalize_dossier_dataframe(df, region_map, internet_map, progress: ProgressCb = None):
     if df is None or df.empty:
         return pd.DataFrame()
+
+    emit_progress(progress, 42, "Normalizando tipo de medio, región y columnas…")
 
     tipo_medio_map = TIPO_MEDIO_MAP
 
@@ -619,6 +622,8 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     df["Aparece Logo"] = get_column_robust(df, "Aparece Logo").fillna("").astype(str).apply(clean_text)
 
     df["resumen corto"] = raw_resumen_orig.fillna("").astype(str).str.strip()
+
+    emit_progress(progress, 48, "Limpiando cuerpos y enlaces…")
 
     cuerpo_col = "CuerpoEs" if "CuerpoEs" in df.columns else "Resumen - Aclaracion"
     cuerpo_cleaned = df.get(cuerpo_col, pd.Series([""] * len(df))).astype(str).apply(clean_cuerpo)
