@@ -13,3 +13,5 @@ selenium>=4.15.0
 requests
 beautifulsoup4
 starlette<0.40.0
+xlsxwriter
+python-calamine
